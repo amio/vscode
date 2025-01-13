@@ -3,31 +3,31 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import 'vs/css!./media/actions';
-import { URI } from 'vs/base/common/uri';
-import { localize } from 'vs/nls';
-import { ApplyZoomTarget, applyZoom } from 'vs/platform/window/electron-sandbox/window';
-import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
-import { getZoomLevel } from 'vs/base/browser/browser';
-import { FileKind } from 'vs/platform/files/common/files';
-import { IModelService } from 'vs/editor/common/services/model';
-import { ILanguageService } from 'vs/editor/common/languages/language';
-import { IQuickInputService, IQuickInputButton, IQuickPickItem } from 'vs/platform/quickinput/common/quickInput';
-import { getIconClasses } from 'vs/editor/common/services/getIconClasses';
-import { ICommandHandler } from 'vs/platform/commands/common/commands';
-import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { INativeHostService } from 'vs/platform/native/common/native';
-import { Codicon } from 'vs/base/common/codicons';
-import { ThemeIcon } from 'vs/base/common/themables';
-import { isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier } from 'vs/platform/workspace/common/workspace';
-import { Action2, IAction2Options, MenuId } from 'vs/platform/actions/common/actions';
-import { Categories } from 'vs/platform/action/common/actionCommonCategories';
-import { KeyChord, KeyCode, KeyMod } from 'vs/base/common/keyCodes';
-import { KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
-import { isMacintosh } from 'vs/base/common/platform';
-import { getActiveWindow } from 'vs/base/browser/dom';
-import { IOpenedAuxiliaryWindow, IOpenedMainWindow, isOpenedAuxiliaryWindow } from 'vs/platform/window/common/window';
+import './media/actions.css';
+import { URI } from '../../../base/common/uri.js';
+import { localize, localize2 } from '../../../nls.js';
+import { ApplyZoomTarget, MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, applyZoom } from '../../../platform/window/electron-sandbox/window.js';
+import { IKeybindingService } from '../../../platform/keybinding/common/keybinding.js';
+import { getZoomLevel } from '../../../base/browser/browser.js';
+import { FileKind } from '../../../platform/files/common/files.js';
+import { IModelService } from '../../../editor/common/services/model.js';
+import { ILanguageService } from '../../../editor/common/languages/language.js';
+import { IQuickInputService, IQuickInputButton, IQuickPickItem, QuickPickInput } from '../../../platform/quickinput/common/quickInput.js';
+import { getIconClasses } from '../../../editor/common/services/getIconClasses.js';
+import { ICommandHandler } from '../../../platform/commands/common/commands.js';
+import { ServicesAccessor } from '../../../platform/instantiation/common/instantiation.js';
+import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
+import { INativeHostService } from '../../../platform/native/common/native.js';
+import { Codicon } from '../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../base/common/themables.js';
+import { isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier } from '../../../platform/workspace/common/workspace.js';
+import { Action2, IAction2Options, MenuId } from '../../../platform/actions/common/actions.js';
+import { Categories } from '../../../platform/action/common/actionCommonCategories.js';
+import { KeyCode, KeyMod } from '../../../base/common/keyCodes.js';
+import { KeybindingWeight } from '../../../platform/keybinding/common/keybindingsRegistry.js';
+import { isMacintosh } from '../../../base/common/platform.js';
+import { getActiveWindow } from '../../../base/browser/dom.js';
+import { IOpenedAuxiliaryWindow, IOpenedMainWindow, isOpenedAuxiliaryWindow } from '../../../platform/window/common/window.js';
 
 export class CloseWindowAction extends Action2 {
 
@@ -37,9 +37,8 @@ export class CloseWindowAction extends Action2 {
 		super({
 			id: CloseWindowAction.ID,
 			title: {
-				value: localize('closeWindow', "Close Window"),
+				...localize2('closeWindow', "Close Window"),
 				mnemonicTitle: localize({ key: 'miCloseWindow', comment: ['&& denotes a mnemonic'] }, "Clos&&e Window"),
-				original: 'Close Window'
 			},
 			f1: true,
 			keybinding: {
@@ -65,41 +64,64 @@ export class CloseWindowAction extends Action2 {
 
 abstract class BaseZoomAction extends Action2 {
 
-	private static readonly SETTING_KEY = 'window.zoomLevel';
-
-	private static readonly MAX_ZOOM_LEVEL = 8;
-	private static readonly MIN_ZOOM_LEVEL = -8;
+	private static readonly ZOOM_LEVEL_SETTING_KEY = 'window.zoomLevel';
+	private static readonly ZOOM_PER_WINDOW_SETTING_KEY = 'window.zoomPerWindow';
 
 	constructor(desc: Readonly<IAction2Options>) {
 		super(desc);
 	}
 
-	protected async setZoomLevel(accessor: ServicesAccessor, level: number, target: ApplyZoomTarget): Promise<void> {
+	protected async setZoomLevel(accessor: ServicesAccessor, levelOrReset: number | true): Promise<void> {
 		const configurationService = accessor.get(IConfigurationService);
 
-		level = Math.round(level); // when reaching smallest zoom, prevent fractional zoom levels
+		let target: ApplyZoomTarget;
+		if (configurationService.getValue(BaseZoomAction.ZOOM_PER_WINDOW_SETTING_KEY) !== false) {
+			target = ApplyZoomTarget.ACTIVE_WINDOW;
+		} else {
+			target = ApplyZoomTarget.ALL_WINDOWS;
+		}
 
-		if (level > BaseZoomAction.MAX_ZOOM_LEVEL || level < BaseZoomAction.MIN_ZOOM_LEVEL) {
+		let level: number;
+		if (typeof levelOrReset === 'number') {
+			level = Math.round(levelOrReset); // prevent fractional zoom levels
+		} else {
+
+			// reset to 0 when we apply to all windows
+			if (target === ApplyZoomTarget.ALL_WINDOWS) {
+				level = 0;
+			}
+
+			// otherwise, reset to the default zoom level
+			else {
+				const defaultLevel = configurationService.getValue(BaseZoomAction.ZOOM_LEVEL_SETTING_KEY);
+				if (typeof defaultLevel === 'number') {
+					level = defaultLevel;
+				} else {
+					level = 0;
+				}
+			}
+		}
+
+		if (level > MAX_ZOOM_LEVEL || level < MIN_ZOOM_LEVEL) {
 			return; // https://github.com/microsoft/vscode/issues/48357
 		}
 
 		if (target === ApplyZoomTarget.ALL_WINDOWS) {
-			await configurationService.updateValue(BaseZoomAction.SETTING_KEY, level);
+			await configurationService.updateValue(BaseZoomAction.ZOOM_LEVEL_SETTING_KEY, level);
 		}
 
 		applyZoom(level, target);
 	}
 }
 
-export class ZoomInAllWindowsAction extends BaseZoomAction {
+export class ZoomInAction extends BaseZoomAction {
 
 	constructor() {
 		super({
 			id: 'workbench.action.zoomIn',
 			title: {
-				value: localize('zoomIn', "Zoom In (All Windows)"),
+				...localize2('zoomIn', "Zoom In"),
 				mnemonicTitle: localize({ key: 'miZoomIn', comment: ['&& denotes a mnemonic'] }, "&&Zoom In"),
-				original: 'Zoom In (All Windows)'
 			},
 			category: Categories.View,
 			f1: true,
@@ -117,19 +139,18 @@ export class ZoomInAllWindowsAction extends BaseZoomAction {
 	}
 
 	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) + 1, ApplyZoomTarget.ALL_WINDOWS);
+		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) + 1);
 	}
 }
 
-export class ZoomOutAllWindowsAction extends BaseZoomAction {
+export class ZoomOutAction extends BaseZoomAction {
 
 	constructor() {
 		super({
 			id: 'workbench.action.zoomOut',
 			title: {
-				value: localize('zoomOut', "Zoom Out (All Windows)"),
+				...localize2('zoomOut', "Zoom Out"),
 				mnemonicTitle: localize({ key: 'miZoomOut', comment: ['&& denotes a mnemonic'] }, "&&Zoom Out"),
-				original: 'Zoom Out (All Windows)'
 			},
 			category: Categories.View,
 			f1: true,
@@ -151,19 +172,18 @@ export class ZoomOutAllWindowsAction extends BaseZoomAction {
 	}
 
 	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) - 1, ApplyZoomTarget.ALL_WINDOWS);
+		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) - 1);
 	}
 }
 
-export class ZoomResetAllWindowsAction extends BaseZoomAction {
+export class ZoomResetAction extends BaseZoomAction {
 
 	constructor() {
 		super({
 			id: 'workbench.action.zoomReset',
 			title: {
-				value: localize('zoomReset', "Reset Zoom (All Windows)"),
+				...localize2('zoomReset', "Reset Zoom"),
 				mnemonicTitle: localize({ key: 'miZoomReset', comment: ['&& denotes a mnemonic'] }, "&&Reset Zoom"),
-				original: 'Reset Zoom (All Windows)'
 			},
 			category: Categories.View,
 			f1: true,
@@ -180,82 +200,7 @@ export class ZoomResetAllWindowsAction extends BaseZoomAction {
 	}
 
 	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, 0, ApplyZoomTarget.ALL_WINDOWS);
-	}
-}
-
-export class ZoomInActiveWindowAction extends BaseZoomAction {
-
-	constructor() {
-		super({
-			id: 'workbench.action.zoomInActiveWindow',
-			title: {
-				value: localize('zoomInActiveWindow', "Zoom In (Active Window)"),
-				original: 'Zoom In (Active Window)'
-			},
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				weight: KeybindingWeight.WorkbenchContrib,
-				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Equal),
-				secondary: [KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Equal), KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.NumpadAdd)]
-			}
-		});
-	}
-
-	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) + 1, ApplyZoomTarget.ACTIVE_WINDOW);
-	}
-}
-
-export class ZoomOutActiveWindowAction extends BaseZoomAction {
-
-	constructor() {
-		super({
-			id: 'workbench.action.zoomOutActiveWindow',
-			title: {
-				value: localize('zoomOutActiveWindow', "Zoom Out (Active Window)"),
-				original: 'Zoom Out (Active Window)'
-			},
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				weight: KeybindingWeight.WorkbenchContrib,
-				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Minus),
-				secondary: [KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Minus), KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.NumpadSubtract)],
-				linux: {
-					primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Minus),
-					secondary: [KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.NumpadSubtract)]
-				}
-			}
-		});
-	}
-
-	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, getZoomLevel(getActiveWindow()) - 1, ApplyZoomTarget.ACTIVE_WINDOW);
-	}
-}
-
-export class ZoomResetActiveWindowAction extends BaseZoomAction {
-
-	constructor() {
-		super({
-			id: 'workbench.action.zoomResetActiveWindow',
-			title: {
-				value: localize('zoomResetActiveWindow', "Reset Zoom (Active Window)"),
-				original: 'Reset Zoom (Active Window)'
-			},
-			category: Categories.View,
-			f1: true,
-			keybinding: {
-				weight: KeybindingWeight.WorkbenchContrib,
-				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.CtrlCmd | KeyCode.Numpad0)
-			}
-		});
-	}
-
-	override run(accessor: ServicesAccessor): Promise<void> {
-		return super.setZoomLevel(accessor, 0, ApplyZoomTarget.ACTIVE_WINDOW);
+		return super.setZoomLevel(accessor, true);
 	}
 }
 
@@ -267,7 +212,7 @@ abstract class BaseSwitchWindow extends Action2 {
 	};
 
 	private readonly closeDirtyWindowAction: IQuickInputButton = {
-		iconClass: 'dirty-window ' + Codicon.closeDirty,
+		iconClass: 'dirty-window ' + ThemeIcon.asClassName(Codicon.closeDirty),
 		tooltip: localize('close', "Close Window"),
 		alwaysVisible: true
 	};
@@ -308,11 +253,17 @@ abstract class BaseSwitchWindow extends Action2 {
 			readonly windowId: number;
 		}
 
-		const picks: Array<IWindowPickItem> = [];
+		function isWindowPickItem(candidate: unknown): candidate is IWindowPickItem {
+			const windowPickItem = candidate as IWindowPickItem | undefined;
+
+			return typeof windowPickItem?.windowId === 'number';
+		}
+
+		const picks: Array<QuickPickInput<IWindowPickItem>> = [];
 		for (const window of mainWindows) {
 			const auxiliaryWindows = mapMainWindowToAuxiliaryWindows.get(window.id);
 			if (mapMainWindowToAuxiliaryWindows.size > 0) {
-				picks.push({ type: 'separator', payload: -1, label: auxiliaryWindows ? localize('windowGroup', "window group") : undefined } as unknown as IWindowPickItem);
+				picks.push({ type: 'separator', label: auxiliaryWindows ? localize('windowGroup', "window group") : undefined });
 			}
 
 			const resource = window.filename ? URI.file(window.filename) : isSingleFolderWorkspaceIdentifier(window.workspace) ? window.workspace.uri : isWorkspaceIdentifier(window.workspace) ? window.workspace.configPath : undefined;
@@ -341,13 +292,27 @@ abstract class BaseSwitchWindow extends Action2 {
 			}
 		}
 
-		const placeHolder = localize('switchWindowPlaceHolder', "Select a window to switch to");
-		const autoFocusIndex = (picks.indexOf(picks.filter(pick => pick.windowId === currentWindowId)[0]) + 1) % picks.length;
-
 		const pick = await quickInputService.pick(picks, {
 			contextKey: 'inWindowsPicker',
-			activeItem: picks[autoFocusIndex],
-			placeHolder,
+			activeItem: (() => {
+				for (let i = 0; i < picks.length; i++) {
+					const pick = picks[i];
+					if (isWindowPickItem(pick) && pick.windowId === currentWindowId) {
+						let nextPick = picks[i + 1]; // try to select next window unless it's a separator
+						if (isWindowPickItem(nextPick)) {
+							return nextPick;
+						}
+
+						nextPick = picks[i + 2]; // otherwise try to select the next window after the separator
+						if (isWindowPickItem(nextPick)) {
+							return nextPick;
+						}
+					}
+				}
+
+				return undefined;
+			})(),
+			placeHolder: localize('switchWindowPlaceHolder', "Select a window to switch to"),
 			quickNavigate: this.isQuickNavigate() ? { keybindings: keybindingService.lookupKeybindings(this.desc.id) } : undefined,
 			hideInput: this.isQuickNavigate(),
 			onDidTriggerItemButton: async context => {
@@ -367,7 +332,7 @@ export class SwitchWindowAction extends BaseSwitchWindow {
 	constructor() {
 		super({
 			id: 'workbench.action.switchWindow',
-			title: { value: localize('switchWindow', "Switch Window..."), original: 'Switch Window...' },
+			title: localize2('switchWindow', 'Switch Window...'),
 			f1: true,
 			keybinding: {
 				weight: KeybindingWeight.WorkbenchContrib,
@@ -387,7 +352,7 @@ export class QuickSwitchWindowAction extends BaseSwitchWindow {
 	constructor() {
 		super({
 			id: 'workbench.action.quickSwitchWindow',
-			title: { value: localize('quickSwitchWindow', "Quick Switch Window..."), original: 'Quick Switch Window...' },
+			title: localize2('quickSwitchWindow', 'Quick Switch Window...'),
 			f1: false // hide quick pickers from command palette to not confuse with the other entry that shows a input field
 		});
 	}

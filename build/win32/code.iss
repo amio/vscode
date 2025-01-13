@@ -35,6 +35,11 @@ ArchitecturesAllowed={#ArchitecturesAllowed}
 ArchitecturesInstallIn64BitMode={#ArchitecturesInstallIn64BitMode}
 WizardStyle=modern
 
+// We've seen an uptick on broken installations from updates which were unable
+// to shutdown VS Code. We rely on the fact that the update signals
+// that VS Code is ready to be shutdown, so we're good to use `force` here.
+CloseApplications=force
+
 #ifdef Sign
 SignTool=esrp
 #endif
@@ -1296,7 +1301,7 @@ Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\Drive\shell\{#RegValu
 #define Uninstall32RootKey "HKLM32"
 #endif
 
-Root: {#EnvironmentRootKey}; Subkey: "{#EnvironmentKey}"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}\bin"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}\bin'))
+Root: {#EnvironmentRootKey}; Subkey: "{#EnvironmentKey}"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
 
 [Code]
 function IsBackgroundUpdate(): Boolean;
@@ -1519,7 +1524,7 @@ begin
 
       StopTunnelServiceIfNeeded();
 
-      Exec(ExpandConstant('{app}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists())), '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode);
+      Exec(ExpandConstant('{app}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists()) + ' "{cm:UpdatingVisualStudioCode}"'), '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode);
     end;
 
     if ShouldRestartTunnelService then
@@ -1553,7 +1558,7 @@ begin
   until Length(Text)=0;
 end;
 
-function NeedsAddPath(Param: string): boolean;
+function NeedsAddToPath(VSCode: string): boolean;
 var
   OrigPath: string;
 begin
@@ -1562,7 +1567,19 @@ begin
     Result := True;
     exit;
   end;
-  Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+  Result := Pos(';' + VSCode + ';', ';' + OrigPath + ';') = 0;
+end;
+
+function AddToPath(VSCode: string): string;
+var
+  OrigPath: string;
+begin
+  RegQueryStringValue({#EnvironmentRootKey}, '{#EnvironmentKey}', 'Path', OrigPath)
+
+  if (Length(OrigPath) > 0) and (OrigPath[Length(OrigPath)] = ';') then
+    Result := OrigPath + VSCode
+  else
+    Result := OrigPath + ';' + VSCode
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -4,7 +4,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.buildExtensionMedia = exports.webpackExtensions = exports.translatePackageJSON = exports.scanBuiltinExtensions = exports.packageMarketplaceExtensionsStream = exports.packageLocalExtensionsStream = exports.fromGithub = exports.fromMarketplace = void 0;
+exports.fromMarketplace = fromMarketplace;
+exports.fromGithub = fromGithub;
+exports.packageNonNativeLocalExtensionsStream = packageNonNativeLocalExtensionsStream;
+exports.packageNativeLocalExtensionsStream = packageNativeLocalExtensionsStream;
+exports.packageAllLocalExtensionsStream = packageAllLocalExtensionsStream;
+exports.packageMarketplaceExtensionsStream = packageMarketplaceExtensionsStream;
+exports.scanBuiltinExtensions = scanBuiltinExtensions;
+exports.translatePackageJSON = translatePackageJSON;
+exports.webpackExtensions = webpackExtensions;
+exports.buildExtensionMedia = buildExtensionMedia;
 const es = require("event-stream");
 const fs = require("fs");
 const cp = require("child_process");
@@ -27,7 +36,7 @@ const getVersion_1 = require("./getVersion");
 const fetch_1 = require("./fetch");
 const root = path.dirname(path.dirname(__dirname));
 const commit = (0, getVersion_1.getVersion)(root);
-const sourceMappingURLBase = `https://ticino.blob.core.windows.net/sourcemaps/${commit}`;
+const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
 function minifyExtensionResources(input) {
     const jsonFilter = filter(['**/*.json', '**/*.code-snippets'], { restore: true });
     return input
@@ -90,7 +99,12 @@ function fromLocalWebpack(extensionPath, webpackConfigFileName, disableMangle) {
             }
         }
     }
-    vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.Yarn, packagedDependencies }).then(fileNames => {
+    // TODO: add prune support based on packagedDependencies to vsce.PackageManager.Npm similar
+    // to vsce.PackageManager.Yarn.
+    // A static analysis showed there are no webpack externals that are dependencies of the current
+    // local extensions so we can use the vsce.PackageManager.None config to ignore dependencies list
+    // as a temporary workaround.
+    vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.None, packagedDependencies }).then(fileNames => {
         const files = fileNames
             .map(fileName => path.join(extensionPath, fileName))
             .map(filePath => new File({
@@ -146,10 +160,12 @@ function fromLocalWebpack(extensionPath, webpackConfigFileName, disableMangle) {
                     // source map handling:
                     // * rewrite sourceMappingURL
                     // * save to disk so that upload-task picks this up
-                    const contents = data.contents.toString('utf8');
-                    data.contents = Buffer.from(contents.replace(/\n\/\/# sourceMappingURL=(.*)$/gm, function (_m, g1) {
-                        return `\n//# sourceMappingURL=${sourceMappingURLBase}/extensions/${path.basename(extensionPath)}/${relativeOutputPath}/${g1}`;
-                    }), 'utf8');
+                    if (path.extname(data.basename) === '.js') {
+                        const contents = data.contents.toString('utf8');
+                        data.contents = Buffer.from(contents.replace(/\n\/\/# sourceMappingURL=(.*)$/gm, function (_m, g1) {
+                            return `\n//# sourceMappingURL=${sourceMappingURLBase}/extensions/${path.basename(extensionPath)}/${relativeOutputPath}/${g1}`;
+                        }), 'utf8');
+                    }
                     this.emit('data', data);
                 }));
             });
@@ -171,7 +187,7 @@ function fromLocalWebpack(extensionPath, webpackConfigFileName, disableMangle) {
 function fromLocalNormal(extensionPath) {
     const vsce = require('@vscode/vsce');
     const result = es.through();
-    vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.Yarn })
+    vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.Npm })
         .then(fileNames => {
         const files = fileNames
             .map(fileName => path.join(extensionPath, fileName))
@@ -213,7 +229,6 @@ function fromMarketplace(serviceUrl, { name: extensionName, version, sha256, met
         .pipe(json({ __metadata: metadata }))
         .pipe(packageJsonFilter.restore);
 }
-exports.fromMarketplace = fromMarketplace;
 function fromGithub({ name, version, repo, sha256, metadata }) {
     const json = require('gulp-json-editor');
     fancyLog('Downloading extension from GH:', ansiColors.yellow(`${name}@${version}`), '...');
@@ -232,10 +247,17 @@ function fromGithub({ name, version, repo, sha256, metadata }) {
         .pipe(json({ __metadata: metadata }))
         .pipe(packageJsonFilter.restore);
 }
-exports.fromGithub = fromGithub;
+/**
+ * All extensions that are known to have some native component and thus must be built on the
+ * platform that is being built.
+ */
+const nativeExtensions = [
+    'microsoft-authentication',
+];
 const excludedExtensions = [
     'vscode-api-tests',
     'vscode-colorize-tests',
+    'vscode-colorize-perf-tests',
     'vscode-test-resolver',
     'ms-vscode.node-debug',
     'ms-vscode.node-debug2',
@@ -276,7 +298,46 @@ function isWebExtension(manifest) {
     }
     return true;
 }
-function packageLocalExtensionsStream(forWeb, disableMangle) {
+/**
+ * Package local extensions that are known to not have native dependencies. Mutually exclusive to {@link packageNativeLocalExtensionsStream}.
+ * @param forWeb build the extensions that have web targets
+ * @param disableMangle disable the mangler
+ * @returns a stream
+ */
+function packageNonNativeLocalExtensionsStream(forWeb, disableMangle) {
+    return doPackageLocalExtensionsStream(forWeb, disableMangle, false);
+}
+/**
+ * Package local extensions that are known to have native dependencies. Mutually exclusive to {@link packageNonNativeLocalExtensionsStream}.
+ * @note it's possible that the extension does not have native dependencies for the current platform, especially if building for the web,
+ * but we simplify the logic here by having a flat list of extensions (See {@link nativeExtensions}) that are known to have native
+ * dependencies on some platform and thus should be packaged on the platform that they are building for.
+ * @param forWeb build the extensions that have web targets
+ * @param disableMangle disable the mangler
+ * @returns a stream
+ */
+function packageNativeLocalExtensionsStream(forWeb, disableMangle) {
+    return doPackageLocalExtensionsStream(forWeb, disableMangle, true);
+}
+/**
+ * Package all the local extensions... both those that are known to have native dependencies and those that are not.
+ * @param forWeb build the extensions that have web targets
+ * @param disableMangle disable the mangler
+ * @returns a stream
+ */
+function packageAllLocalExtensionsStream(forWeb, disableMangle) {
+    return es.merge([
+        packageNonNativeLocalExtensionsStream(forWeb, disableMangle),
+        packageNativeLocalExtensionsStream(forWeb, disableMangle)
+    ]);
+}
+/**
+ * @param forWeb build the extensions that have web targets
+ * @param disableMangle disable the mangler
+ * @param native build the extensions that are marked as having native dependencies
+ */
+function doPackageLocalExtensionsStream(forWeb, disableMangle, native) {
+    const nativeExtensionsSet = new Set(nativeExtensions);
     const localExtensionsDescriptions = (glob.sync('extensions/*/package.json')
         .map(manifestPath => {
         const absoluteManifestPath = path.join(root, manifestPath);
@@ -284,6 +345,7 @@ function packageLocalExtensionsStream(forWeb, disableMangle) {
         const extensionName = path.basename(extensionPath);
         return { name: extensionName, path: extensionPath, manifestPath: absoluteManifestPath };
     })
+        .filter(({ name }) => native ? nativeExtensionsSet.has(name) : !nativeExtensionsSet.has(name))
         .filter(({ name }) => excludedExtensions.indexOf(name) === -1)
         .filter(({ name }) => builtInExtensions.every(b => b.name !== name))
         .filter(({ manifestPath }) => (forWeb ? isWebExtension(require(manifestPath)) : true)));
@@ -298,7 +360,7 @@ function packageLocalExtensionsStream(forWeb, disableMangle) {
     else {
         // also include shared production node modules
         const productionDependencies = (0, dependencies_1.getProductionDependencies)('extensions/');
-        const dependenciesSrc = productionDependencies.map(d => path.relative(root, d.path)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
+        const dependenciesSrc = productionDependencies.map(d => path.relative(root, d)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
         result = es.merge(localExtensionsStream, gulp.src(dependenciesSrc, { base: '.' })
             .pipe(util2.cleanNodeModules(path.join(root, 'build', '.moduleignore')))
             .pipe(util2.cleanNodeModules(path.join(root, 'build', `.moduleignore.${process.platform}`))));
@@ -306,7 +368,6 @@ function packageLocalExtensionsStream(forWeb, disableMangle) {
     return (result
         .pipe(util2.setExecutableBit(['**/*.sh'])));
 }
-exports.packageLocalExtensionsStream = packageLocalExtensionsStream;
 function packageMarketplaceExtensionsStream(forWeb) {
     const marketplaceExtensionsDescriptions = [
         ...builtInExtensions.filter(({ name }) => (forWeb ? !marketplaceWebExtensionsExclude.has(name) : true)),
@@ -325,7 +386,6 @@ function packageMarketplaceExtensionsStream(forWeb) {
     return (marketplaceExtensionsStream
         .pipe(util2.setExecutableBit(['**/*.sh'])));
 }
-exports.packageMarketplaceExtensionsStream = packageMarketplaceExtensionsStream;
 function scanBuiltinExtensions(extensionsRoot, exclude = []) {
     const scannedExtensions = [];
     try {
@@ -361,7 +421,6 @@ function scanBuiltinExtensions(extensionsRoot, exclude = []) {
         return scannedExtensions;
     }
 }
-exports.scanBuiltinExtensions = scanBuiltinExtensions;
 function translatePackageJSON(packageJSON, packageNLSPath) {
     const CharCode_PC = '%'.charCodeAt(0);
     const packageNls = JSON.parse(fs.readFileSync(packageNLSPath).toString());
@@ -385,7 +444,6 @@ function translatePackageJSON(packageJSON, packageNLSPath) {
     translate(packageJSON);
     return packageJSON;
 }
-exports.translatePackageJSON = translatePackageJSON;
 const extensionsPath = path.join(root, 'extensions');
 // Additional projects to run esbuild on. These typically build code for webviews
 const esbuildMediaScripts = [
@@ -459,7 +517,6 @@ async function webpackExtensions(taskName, isWatch, webpackConfigLocations) {
         }
     });
 }
-exports.webpackExtensions = webpackExtensions;
 async function esbuildExtensions(taskName, isWatch, scripts) {
     function reporter(stdError, script) {
         const matches = (stdError || '').match(/\> (.+): error: (.+)?/g);
@@ -482,9 +539,6 @@ async function esbuildExtensions(taskName, isWatch, scripts) {
                     return reject(error);
                 }
                 reporter(stderr, script);
-                if (stderr) {
-                    return reject();
-                }
                 return resolve();
             });
             proc.stdout.on('data', (data) => {
@@ -500,5 +554,4 @@ async function buildExtensionMedia(isWatch, outputRoot) {
         outputRoot: outputRoot ? path.join(root, outputRoot, path.dirname(p)) : undefined
     })));
 }
-exports.buildExtensionMedia = buildExtensionMedia;
 //# sourceMappingURL=extensions.js.map

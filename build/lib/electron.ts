@@ -68,7 +68,7 @@ function darwinBundleDocumentType(extensions: string[], icon: string, nameOrSuff
 		role: 'Editor',
 		ostypes: ['TEXT', 'utxt', 'TUTX', '****'],
 		extensions,
-		iconFile: 'resources/darwin/' + icon + '.icns',
+		iconFile: 'resources/darwin/' + icon.toLowerCase() + '.icns',
 		utis
 	};
 }
@@ -93,7 +93,7 @@ function darwinBundleDocumentTypes(types: { [name: string]: string | string[] },
 			ostypes: ['TEXT', 'utxt', 'TUTX', '****'],
 			extensions: Array.isArray(extensions) ? extensions : [extensions],
 			iconFile: 'resources/darwin/' + icon + '.icns'
-		} as DarwinDocumentType;
+		};
 	});
 }
 
@@ -104,7 +104,7 @@ export const config = {
 	tag: product.electronRepository ? `v${electronVersion}-${msBuildId}` : undefined,
 	productAppName: product.nameLong,
 	companyName: 'Microsoft Corporation',
-	copyright: 'Copyright (C) 2023 Microsoft. All rights reserved',
+	copyright: 'Copyright (C) 2024 Microsoft. All rights reserved',
 	darwinIcon: 'resources/darwin/code.icns',
 	darwinBundleIdentifier: product.darwinBundleIdentifier,
 	darwinApplicationCategoryType: 'public.app-category.developer-tools',
